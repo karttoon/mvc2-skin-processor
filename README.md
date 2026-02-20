@@ -1,6 +1,6 @@
 # MvC2 Skin Processor
 
-A self-contained tool for extracting and standardizing Marvel vs. Capcom 2 character skin sprite sheets from Dreamcast disc images (CDI), PS3 packages (PKG), or individual PNG palette swaps.
+A self-contained tool for extracting and standardizing Marvel vs. Capcom 2 character skin sprite sheets from Dreamcast disc images (CDI), PS3 packages (PKG), or individual PalMod PNG palette swaps.
 
 Point it at a CDI, PKG, PNG, or a folder of mixed inputs and it outputs standardized indexed-color sprite sheets organized by character.
 
@@ -47,6 +47,23 @@ python mvc2_skin_processor.py game.cdi -o ./my_output
 
 # Process an entire folder of mixed inputs
 python mvc2_skin_processor.py ./my_skins_folder/
+```
+
+### Review & Curate
+
+After extraction, review the output with the built-in gallery:
+
+```bash
+# Launch the gallery to triage skins (Y=keep, N=skip)
+python gallery.py ./output
+
+# Apply verdicts — remove all skins marked 'skip'
+python apply_verdicts.py ./output
+python apply_verdicts.py ./output --dry-run  # preview first
+
+# Merge curated skins into your personal collection
+python merge_palettes.py ./output ./my_palettes
+python merge_palettes.py ./output ./my_palettes --skip-defaults  # auto-skip default game palettes
 ```
 
 ### Test with included samples
@@ -122,6 +139,30 @@ The `sprite_bases/` directory contains all 56 character base sprites as compress
 
 Total size: ~1.4 MB for all 56 characters.
 
+## Complete Workflow
+
+```
+1. Extract:    python mvc2_skin_processor.py game.cdi -o ./output
+2. Review:     python gallery.py ./output         (Y/N each skin in browser)
+3. Curate:     python apply_verdicts.py ./output   (delete skins marked 'skip')
+4. Merge:      python merge_palettes.py ./output ./my_palettes --skip-defaults
+```
+
+## Project Structure
+
+```
+mvc2_skin_processor.py    # Main extraction tool (CDI/PKG/PNG → standardized sprites)
+ps3_pkg_extract.py        # PS3 PKG decryption/extraction
+gallery.py                # Browser-based skin triage gallery
+apply_verdicts.py         # Apply gallery verdicts (remove skipped skins)
+merge_palettes.py         # Merge curated skins into personal collection
+default_hashes.json       # SHA256 hashes of all 336 default game palettes
+mvc2_extract/             # Core library (CDI parsing, palettes, sprites, renderer)
+sprite_bases/             # 56 character base sprites (.npz, ~1.4 MB total)
+composite_bases/          # 17 multi-row character composites (.npz)
+tools/                    # Build/maintenance tools (not part of user workflow)
+```
+
 ## Where to Get MvC2 Mixes
 
 Community palette mods ("mixes") for MvC2 are archived at:
@@ -136,7 +177,7 @@ Community palette mods ("mixes") for MvC2 are archived at:
 
 ## Acknowledgments
 
-- **[PalMod](https://github.com/palmod/palmod)** by knarfman0 — Sprite database and palette editing tool
+- **[PalMod](https://github.com/palmod/palmod)** by Preppy — Sprite database and palette editing tool
 - **[cdirip](https://github.com/jozip/cdirip)** by DeXT/Lawrence Williams — CDI format reference (GPL)
 - The MvC2 modding community for palette mixes and documentation
 
