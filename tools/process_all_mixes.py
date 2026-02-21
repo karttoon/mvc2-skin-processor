@@ -38,8 +38,8 @@ from mvc2_extract.characters import (
     palette_slot_map,
 )
 
-DEFAULT_IMGDAT = r"C:\Program Files (x86)\PalMod\img2020.dat"
-SEVENZ = r"C:\Program Files\NVIDIA Corporation\NVIDIA App\7z.exe"
+DEFAULT_IMGDAT = os.environ.get("MVC2_IMGDAT")
+SEVENZ = os.environ.get("SEVENZ") or shutil.which("7z")
 
 # Items to skip
 SKIP_ITEMS = {
@@ -70,11 +70,12 @@ def sanitize_name(name):
     return name.strip("_")
 
 
-def extract_archive(archive_path, dest_dir):
+def extract_archive(archive_path, dest_dir, sevenz_path=None):
     """Extract an archive using 7z. Returns True if successful."""
+    sz = sevenz_path or SEVENZ
     try:
         result = subprocess.run(
-            [SEVENZ, "x", archive_path, f"-o{dest_dir}", "-y"],
+            [sz, "x", archive_path, f"-o{dest_dir}", "-y"],
             capture_output=True, text=True, timeout=300
         )
         return result.returncode == 0
@@ -615,13 +616,25 @@ def deduplicate(merged_dir):
 
 
 def main():
+    global SEVENZ
+
     parser = argparse.ArgumentParser(description="Mass MvC2 mix processor")
     parser.add_argument("input", help="Mixes directory")
     parser.add_argument("-o", "--output", help="Merged output directory")
-    parser.add_argument("--imgdat", default=DEFAULT_IMGDAT)
+    parser.add_argument("--imgdat", default=DEFAULT_IMGDAT,
+                        help="Path to img2020.dat (or set MVC2_IMGDAT env var)")
+    parser.add_argument("--7z", dest="sevenz", default=SEVENZ,
+                        help="Path to 7z executable (or set SEVENZ env var; auto-detected from PATH)")
     parser.add_argument("--no-cleanup", action="store_true",
                         help="Don't delete archives after processing")
     args = parser.parse_args()
+
+    if not args.imgdat:
+        parser.error("--imgdat is required (or set MVC2_IMGDAT env var)")
+    if not args.sevenz:
+        parser.error("--7z is required (or set SEVENZ env var, or install 7z on PATH)")
+
+    SEVENZ = args.sevenz
 
     mixes_dir = args.input
     merged_dir = args.output or os.path.join(mixes_dir, "merged")

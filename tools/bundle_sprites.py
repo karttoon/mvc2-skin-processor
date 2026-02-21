@@ -23,15 +23,18 @@ from mvc2_extract.characters import (
 )
 from mvc2_extract.sprites import ImgDat
 
-DEFAULT_IMGDAT = r"C:\Program Files (x86)\PalMod\img2020.dat"
 COMPOSITE_BASES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "composite_bases")
 SPRITE_BASES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprite_bases")
 
 
 def main():
     parser = argparse.ArgumentParser(description="Bundle MvC2 base sprites into sprite_bases/")
-    parser.add_argument("--imgdat", default=DEFAULT_IMGDAT, help="Path to img2020.dat")
+    parser.add_argument("--imgdat", default=os.environ.get("MVC2_IMGDAT"),
+                        help="Path to img2020.dat (or set MVC2_IMGDAT env var)")
     args = parser.parse_args()
+
+    if not args.imgdat:
+        parser.error("--imgdat is required (or set MVC2_IMGDAT env var)")
 
     os.makedirs(SPRITE_BASES_DIR, exist_ok=True)
 

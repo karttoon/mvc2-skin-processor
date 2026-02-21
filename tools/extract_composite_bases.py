@@ -47,9 +47,10 @@ def find_default_skin(char_dir):
 
 
 def main():
-    merged_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else Path(
-        r"D:\Storage\MvC2Modding\MvC2_Skins\Mixes\merged"
-    )
+    if len(sys.argv) < 2:
+        print("Usage: extract_composite_bases.py <merged_skins_directory>", file=sys.stderr)
+        sys.exit(1)
+    merged_dir = Path(sys.argv[1])
     out_dir = Path(__file__).parent / "composite_bases"
     out_dir.mkdir(exist_ok=True)
 

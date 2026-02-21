@@ -23,8 +23,7 @@ from mvc2_extract.sprites import ImgDat
 from mvc2_extract.renderer import render_sprite, render_composite
 from mvc2_extract.characters import CHARACTERS, safe_name, palette_rows
 
-DEFAULT_IMGDAT = r"C:\Program Files (x86)\PalMod\img2020.dat"
-SKINS_ROOT = r"D:\Storage\MvC2Modding\MvC2_Skins"
+DEFAULT_IMGDAT = os.environ.get("MVC2_IMGDAT")
 
 # Map from folder name -> list of (character_id, keywords_for_disambiguation)
 # Most folders map to exactly one character.
@@ -221,7 +220,18 @@ def extract_palette_from_png(filepath):
 
 
 def main():
-    skins_root = sys.argv[1] if len(sys.argv) > 1 else SKINS_ROOT
+    if len(sys.argv) < 2:
+        print("Usage: standardize_skins.py <skins_directory> [--imgdat PATH]", file=sys.stderr)
+        sys.exit(1)
+    skins_root = sys.argv[1]
+
+    imgdat_path = DEFAULT_IMGDAT
+    for i, arg in enumerate(sys.argv):
+        if arg == "--imgdat" and i + 1 < len(sys.argv):
+            imgdat_path = sys.argv[i + 1]
+    if not imgdat_path:
+        print("Error: --imgdat is required (or set MVC2_IMGDAT env var)", file=sys.stderr)
+        sys.exit(1)
 
     print("=" * 60)
     print("MvC2 Skin Standardizer")
@@ -231,7 +241,7 @@ def main():
 
     # Load sprite database
     print("Loading sprite database...")
-    imgdat = ImgDat(DEFAULT_IMGDAT)
+    imgdat = ImgDat(imgdat_path)
 
     # Cache base sprites
     base_sprites = {}

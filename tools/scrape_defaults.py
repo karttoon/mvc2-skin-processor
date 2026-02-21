@@ -75,7 +75,10 @@ BASE_URL = "https://zachd.com/palmod/default"
 
 
 def main():
-    out_dir = sys.argv[1] if len(sys.argv) > 1 else "D:/Storage/MvC2Modding/MvC2_Skins/Mixes/merged"
+    if len(sys.argv) < 2:
+        print("Usage: scrape_defaults.py <output_directory>", file=sys.stderr)
+        sys.exit(1)
+    out_dir = sys.argv[1]
 
     print("=" * 60)
     print("Downloading default MvC2 palettes")
