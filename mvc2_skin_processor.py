@@ -2,14 +2,16 @@
 """
 MvC2 Skin Processor — Unified tool for converting skins to standardized sprite sheets.
 
-Accepts Dreamcast CDI disc images, PS3 PKG packages, individual PNG skin images,
-or folders containing any mix of the above.
+Accepts Dreamcast CDI disc images, PS3 PKG packages, NAOMI arcade ROMs (.bin),
+individual PNG skin images, or folders containing any mix of the above.
 
 Usage:
-    python mvc2_skin_processor.py <input>              # CDI, PKG, PNG, or folder
+    python mvc2_skin_processor.py                      # process ./queue -> ./output
     python mvc2_skin_processor.py skin.png             # auto-detect character
     python mvc2_skin_processor.py skin.png -c Venom    # force character
     python mvc2_skin_processor.py mix.cdi -o my_out    # custom output dir
+    python mvc2_skin_processor.py arcade.bin           # process NAOMI arcade ROM
+    python mvc2_skin_processor.py --clean              # process and remove successful inputs
 
 Output: output/<CharName>/<CharName>_<hash>_<descriptor>.png
 """
@@ -32,6 +34,7 @@ from mvc2_extract.characters import (
 from mvc2_extract.palettes import extract_palette_files, parse_palettes
 from mvc2_extract.renderer import render_sprite, render_composite
 from mvc2_extract.cdi import parse_cdi
+from mvc2_extract.naomi import validate_naomi_rom, parse_naomi_palettes
 
 SPRITE_BASES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprite_bases")
 
@@ -71,10 +74,16 @@ def build_dimension_lookup(bases):
 # ── Naming helpers ────────────────────────────────────────────────────────────
 
 def get_palette_hash(img):
-    """SHA256 first 8 hex chars of the palette rows used by the image."""
+    """SHA256 first 8 hex chars of the palette rows used by the image.
+
+    Index 0 is always transparent, so zero it out before hashing to
+    avoid junk values causing different hashes for identical palettes.
+    """
     pal = img.getpalette()
     if not pal:
         return "00000000"
+    # Zero out index 0 (transparent) so junk values don't affect hash
+    pal[0] = pal[1] = pal[2] = 0
     pixels = img.tobytes()
     max_idx = max(pixels) if pixels else 0
     num_rows = (max_idx // 16) + 1
@@ -150,24 +159,45 @@ def detect_character(img_w, img_h, dim_lookup, bases):
     return None, None
 
 
+def _normalize(name):
+    """Strip all punctuation/whitespace for comparison."""
+    return name.lower().replace(' ', '').replace('_', '').replace('-', '').replace('.', '')
+
+
 def resolve_character_name(name):
-    """Resolve a user-provided character name to a char_id."""
-    name_lower = name.lower().replace(' ', '').replace('_', '').replace('-', '').replace('.', '')
+    """Resolve a user-provided character name to a char_id, or None."""
+    norm = _normalize(name)
     for cid in PLAYABLE_CHARS:
-        cname = CHARACTERS[cid]
-        cname_lower = cname.lower().replace(' ', '').replace('_', '').replace('-', '').replace('.', '')
-        if name_lower == cname_lower:
+        if norm == _normalize(CHARACTERS[cid]):
             return cid
-        sname_lower = safe_name(cname).lower()
-        if name_lower == sname_lower:
-            return cid
-    # Partial match
-    for cid in PLAYABLE_CHARS:
-        cname = CHARACTERS[cid]
-        cname_lower = cname.lower().replace(' ', '').replace('_', '').replace('-', '').replace('.', '')
-        if name_lower in cname_lower or cname_lower in name_lower:
+        if norm == _normalize(safe_name(CHARACTERS[cid])):
             return cid
     return None
+
+
+def suggest_characters(name):
+    """Print characters starting with the same letter as a failed lookup."""
+    first = _normalize(name)[0] if name else ''
+    matches = []
+    for cid in PLAYABLE_CHARS:
+        cname = CHARACTERS[cid]
+        if _normalize(cname).startswith(first):
+            sname = safe_name(cname)
+            matches.append(f"{sname:<25} ({cname})" if sname != cname else cname)
+    if matches:
+        print(f"  Characters starting with '{first.upper()}':")
+        for m in sorted(matches):
+            print(f"    {m}")
+    else:
+        # Show all if no letter match
+        all_names = []
+        for cid in PLAYABLE_CHARS:
+            cname = CHARACTERS[cid]
+            sname = safe_name(cname)
+            all_names.append(f"{sname:<25} ({cname})" if sname != cname else cname)
+        print(f"  Valid character names:")
+        for n in sorted(all_names):
+            print(f"    {n}")
 
 
 # ── Core rendering ────────────────────────────────────────────────────────────
@@ -332,6 +362,51 @@ def process_pkg(pkg_path, bases, out_dir):
         return rendered
 
 
+def process_naomi(bin_path, bases, out_dir):
+    """Process a NAOMI arcade ROM (.bin) file."""
+    descriptor = make_descriptor(os.path.basename(bin_path))
+    print(f"  Validating NAOMI ROM...")
+
+    with open(bin_path, "rb") as f:
+        rom_data = f.read()
+
+    valid, msg = validate_naomi_rom(rom_data)
+    if not valid:
+        print(f"  ERROR: {msg}")
+        return 0
+
+    print(f"  {msg} ({len(rom_data):,} bytes)")
+    print(f"  Extracting palettes for {len(PLAYABLE_CHARS)} characters...")
+
+    rendered = 0
+    chars_done = 0
+    for cid in PLAYABLE_CHARS:
+        if cid not in bases:
+            continue
+
+        palettes = parse_naomi_palettes(rom_data, cid)
+        if not palettes:
+            continue
+
+        base = bases[cid]
+        cname = safe_name(CHARACTERS[cid])
+        char_dir = os.path.join(out_dir, cname)
+        os.makedirs(char_dir, exist_ok=True)
+
+        button_imgs = render_character(cid, palettes, base)
+        for btn, img in button_imgs:
+            pal_hash = get_palette_hash(img)
+            btn_desc = f"{descriptor}-{btn}" if descriptor else btn
+            fname = build_output_name(cname, pal_hash, btn_desc)
+            img.save(os.path.join(char_dir, fname))
+            rendered += 1
+
+        chars_done += 1
+
+    print(f"  Rendered {rendered} skins across {chars_done} characters")
+    return rendered
+
+
 def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     """Process an individual PNG skin image."""
     descriptor = make_descriptor(os.path.basename(png_path))
@@ -348,7 +423,8 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     if force_character:
         cid = resolve_character_name(force_character)
         if cid is None:
-            print(f"  ERROR: Unknown character '{force_character}'")
+            print(f"  ERROR: '{force_character}' not recognized")
+            suggest_characters(force_character)
             img.close()
             return 0
         scale = 1  # doesn't matter, we use the palette not pixels
@@ -465,21 +541,40 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
-    """Route input to the appropriate processor."""
+    """Route input to the appropriate processor.
+
+    Returns (total_rendered, succeeded_files) where succeeded_files is a list
+    of absolute paths to input files that produced at least one output.
+    """
+    succeeded = []
+
     if os.path.isfile(input_path):
         ext = os.path.splitext(input_path)[1].lower()
         name = os.path.basename(input_path)
         print(f"\n[{name}]")
 
         if ext == '.cdi':
-            return process_cdi(input_path, bases, out_dir)
+            count = process_cdi(input_path, bases, out_dir)
         elif ext == '.pkg':
-            return process_pkg(input_path, bases, out_dir)
+            count = process_pkg(input_path, bases, out_dir)
+        elif ext == '.bin':
+            # .bin is generic — validate NAOMI header before processing
+            with open(input_path, "rb") as f:
+                magic = f.read(5)
+            if magic == b"NAOMI":
+                count = process_naomi(input_path, bases, out_dir)
+            else:
+                print(f"  Not a NAOMI ROM (magic={magic!r}), skipping")
+                return 0, []
         elif ext == '.png':
-            return process_image(input_path, bases, dim_lookup, out_dir, force_character)
+            count = process_image(input_path, bases, dim_lookup, out_dir, force_character)
         else:
             print(f"  Unsupported file type: {ext}")
-            return 0
+            return 0, []
+
+        if count > 0:
+            succeeded.append(os.path.abspath(input_path))
+        return count, succeeded
 
     elif os.path.isdir(input_path):
         total = 0
@@ -487,34 +582,95 @@ def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
             item_path = os.path.join(input_path, item)
             if os.path.isfile(item_path):
                 ext = os.path.splitext(item)[1].lower()
-                if ext in ('.cdi', '.pkg', '.png'):
-                    total += process_input(item_path, bases, dim_lookup, out_dir, force_character)
+                if ext in ('.cdi', '.pkg', '.bin', '.png'):
+                    count, files = process_input(item_path, bases, dim_lookup, out_dir, force_character)
+                    total += count
+                    succeeded.extend(files)
             elif os.path.isdir(item_path):
                 # Recurse into subdirectories
-                total += process_input(item_path, bases, dim_lookup, out_dir, force_character)
-        return total
+                count, files = process_input(item_path, bases, dim_lookup, out_dir, force_character)
+                total += count
+                succeeded.extend(files)
+        return total, succeeded
 
     else:
         print(f"ERROR: {input_path} not found")
-        return 0
+        return 0, []
+
+
+def validate_output(out_dir):
+    """Validate that output directory contains valid indexed-color PNGs.
+
+    Returns (valid_count, invalid_files) where invalid_files is a list of
+    paths to output files that failed validation.
+    """
+    valid = 0
+    invalid = []
+    for root, _dirs, files in os.walk(out_dir):
+        for f in files:
+            if not f.lower().endswith('.png'):
+                continue
+            fpath = os.path.join(root, f)
+            try:
+                img = Image.open(fpath)
+                if img.mode != 'P':
+                    invalid.append(fpath)
+                else:
+                    img.load()  # force full decode
+                    valid += 1
+                img.close()
+            except Exception:
+                invalid.append(fpath)
+    return valid, invalid
+
+
+def clean_succeeded_inputs(succeeded_files):
+    """Remove successfully processed input files and clean empty parent dirs."""
+    removed = 0
+    dirs_to_check = set()
+    for fpath in succeeded_files:
+        if os.path.isfile(fpath):
+            dirs_to_check.add(os.path.dirname(fpath))
+            os.remove(fpath)
+            removed += 1
+            print(f"  Removed: {os.path.basename(fpath)}")
+
+    # Clean empty directories (bottom-up), but never remove the input root
+    for d in sorted(dirs_to_check, key=len, reverse=True):
+        try:
+            if os.path.isdir(d) and not os.listdir(d):
+                os.rmdir(d)
+        except OSError:
+            pass
+
+    return removed
 
 
 def main():
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_input = os.path.join(script_dir, "queue")
+    default_output = os.path.join(script_dir, "output")
+
     parser = argparse.ArgumentParser(
         description="MvC2 Skin Processor — Convert CDI, PKG, or PNG skins to standardized sprites",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
+  %(prog)s                            Process ./queue -> ./output
   %(prog)s mix.cdi                    Process a Dreamcast disc image
-  %(prog)s colors.pkg                 Process a PS3 package
-  %(prog)s skin.png                   Process a single skin (auto-detect character)
+  %(prog)s arcade.bin                 Process a NAOMI arcade ROM
   %(prog)s skin.png -c Venom          Process with forced character
-  %(prog)s ./my_skins/                Process all files in a folder
-  %(prog)s mix.cdi -o ./my_output     Custom output directory
+  %(prog)s ./my_skins/ -o ./my_out    Custom input and output directories
+  %(prog)s --clean                    Process and remove successful inputs
 """)
-    parser.add_argument("input", help="CDI file, PKG file, PNG image, or folder")
-    parser.add_argument("-o", "--output", default="./output", help="Output directory (default: ./output)")
-    parser.add_argument("-c", "--character", help="Force character for PNG input (e.g. 'Venom', 'Storm')")
+    parser.add_argument("input", nargs="?", default=default_input,
+                        help="CDI file, PKG file, NAOMI ROM (.bin), PNG image, or folder (default: ./queue)")
+    parser.add_argument("-o", "--output", default=default_output,
+                        help="Output directory (default: ./output)")
+    parser.add_argument("-c", "--character",
+                        help="Force character for PNG input (e.g. 'Venom', 'Storm')")
+    parser.add_argument("--clean", action="store_true",
+                        help="Remove successfully converted input files after validating output")
     args = parser.parse_args()
 
     print("=" * 60)
@@ -527,17 +683,47 @@ Examples:
     dim_lookup = build_dimension_lookup(bases)
     print(f"  {len(bases)} characters loaded")
 
+    in_path = os.path.abspath(args.input)
     out_dir = os.path.abspath(args.output)
     os.makedirs(out_dir, exist_ok=True)
+    print(f"Input:  {in_path}")
     print(f"Output: {out_dir}")
 
     # Process input
-    rendered = process_input(
-        os.path.abspath(args.input), bases, dim_lookup, out_dir, args.character
+    rendered, succeeded = process_input(
+        in_path, bases, dim_lookup, out_dir, args.character
     )
 
     print(f"\n{'=' * 60}")
     print(f"Done! {rendered} skins rendered to {out_dir}")
+
+    # --clean: validate output then remove successful inputs
+    if args.clean and succeeded:
+        print(f"\nValidating output...")
+        valid, invalid = validate_output(out_dir)
+        print(f"  {valid} valid output files")
+        if invalid:
+            print(f"  {len(invalid)} invalid output files — skipping clean")
+            for f in invalid:
+                print(f"    INVALID: {f}")
+        else:
+            print(f"\nCleaning {len(succeeded)} successful input(s)...")
+            removed = clean_succeeded_inputs(succeeded)
+            remaining = []
+            if os.path.isdir(in_path):
+                for root, _dirs, files in os.walk(in_path):
+                    for f in files:
+                        ext = os.path.splitext(f)[1].lower()
+                        if ext in ('.cdi', '.pkg', '.bin', '.png'):
+                            remaining.append(os.path.join(root, f))
+            if remaining:
+                print(f"\n  {len(remaining)} input(s) remaining (failed/unsupported):")
+                for f in remaining:
+                    print(f"    {os.path.relpath(f, in_path)}")
+            else:
+                print(f"  All inputs processed successfully")
+    elif args.clean and not succeeded:
+        print(f"\nNo successful conversions — nothing to clean")
 
 
 if __name__ == "__main__":

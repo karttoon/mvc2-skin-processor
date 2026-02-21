@@ -1,5 +1,8 @@
-# Output
-output/
+# Queue / Output (keep dirs, ignore contents)
+queue/*
+!queue/.gitkeep
+output/*
+!output/.gitkeep
 
 # Disc images & packages
 *.cdi

@@ -5,13 +5,13 @@ CHARACTERS = {
     0x00: "Ryu", 0x01: "Zangief", 0x02: "Guile", 0x03: "Morrigan",
     0x04: "Anakaris", 0x05: "Strider", 0x06: "Cyclops", 0x07: "Wolverine",
     0x08: "Psylocke", 0x09: "Iceman", 0x0A: "Rogue", 0x0B: "Captain America",
-    0x0C: "Spider-Man", 0x0D: "Hulk", 0x0E: "Venom", 0x0F: "Dr. Doom",
+    0x0C: "Spider-Man", 0x0D: "Hulk", 0x0E: "Venom", 0x0F: "Doctor Doom",
     0x10: "Tron Bonne", 0x11: "Jill", 0x12: "Hayato", 0x13: "Ruby Heart",
     0x14: "SonSon", 0x15: "Amingo", 0x16: "Marrow", 0x17: "Cable",
     0x18: "Abyss (Form 1)", 0x19: "Abyss (Form 2)", 0x1A: "Abyss (Form 3)",
-    0x1B: "Chun-Li", 0x1C: "Megaman", 0x1D: "Roll", 0x1E: "Akuma",
-    0x1F: "B.B. Hood", 0x20: "Felicia", 0x21: "Charlie", 0x22: "Sakura",
-    0x23: "Dan", 0x24: "Cammy", 0x25: "Dhalsim", 0x26: "M.Bison",
+    0x1B: "Chun-Li", 0x1C: "Mega Man", 0x1D: "Roll", 0x1E: "Akuma",
+    0x1F: "BB Hood", 0x20: "Felicia", 0x21: "Charlie Nash", 0x22: "Sakura",
+    0x23: "Dan", 0x24: "Cammy", 0x25: "Dhalsim", 0x26: "M. Bison",
     0x27: "Ken", 0x28: "Gambit", 0x29: "Juggernaut", 0x2A: "Storm",
     0x2B: "Sabretooth", 0x2C: "Magneto", 0x2D: "Shuma-Gorath",
     0x2E: "War Machine", 0x2F: "Silver Samurai", 0x30: "Omega Red",
@@ -44,7 +44,7 @@ PALETTE_ROWS = {
     0x14: 7,   # SonSon — staff/monkey
     0x17: 2,   # Cable — viper beam
     0x1B: 2,   # Chun-Li — ki effects
-    # Note: M.Bison Default has max_idx=255 but only 64 stray pixels, not a real composite
+    # Note: M. Bison Default has max_idx=255 but only 64 stray pixels, not a real composite
     0x2B: 3,   # Sabretooth — effects
     0x2D: 2,   # Shuma-Gorath — eye/tentacles
     0x34: 3,   # Sentinel — drones/rockets
@@ -97,6 +97,9 @@ def palette_rows(char_id):
 
 
 def safe_name(name):
-    """Convert character name to filesystem-safe format."""
+    """Convert character name to filesystem-safe format.
+
+    Preserves hyphens (Chun-Li, Spider-Man, Shuma-Gorath).
+    """
     return (name.replace(" ", "_").replace(".", "")
-            .replace("-", "_").replace("(", "").replace(")", ""))
+            .replace("(", "").replace(")", ""))
