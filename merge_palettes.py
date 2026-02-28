@@ -22,6 +22,26 @@ import sys
 from PIL import Image
 
 
+def has_shifted_palette(img):
+    """Check if an indexed PNG has colors at wrong palette indices.
+
+    Returns True if body palette (indices 1-15) is all black but pixels
+    use higher indices, indicating colors were placed at the wrong offset
+    (e.g. 240-255 instead of 0-15).
+    """
+    if img.mode != 'P':
+        return False
+    pal = img.getpalette()
+    if not pal or len(pal) < 48:
+        return False
+    pixels = img.tobytes()
+    max_idx = max(pixels) if pixels else 0
+    if max_idx <= 15:
+        return False
+    return all(pal[i * 3] == 0 and pal[i * 3 + 1] == 0 and pal[i * 3 + 2] == 0
+               for i in range(1, 16))
+
+
 def get_full_palette_hash(filepath):
     """Get SHA256 hash of the full palette data from an indexed PNG.
 
@@ -158,6 +178,17 @@ def main():
         for fname in pngs:
             fpath = os.path.join(char_path, fname)
             try:
+                # Reject PNGs with shifted palette indices (body all-black,
+                # colors at wrong offsets like 240-255)
+                check_img = Image.open(fpath)
+                if has_shifted_palette(check_img):
+                    print(f"  WARNING: {char_name}/{fname} has shifted palette "
+                          f"(body indices all black) — skipping")
+                    errors += 1
+                    check_img.close()
+                    continue
+                check_img.close()
+
                 pal_hash = get_full_palette_hash(fpath)
             except Exception as e:
                 print(f"  ERROR reading {char_name}/{fname}: {e}")
