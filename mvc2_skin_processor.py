@@ -94,6 +94,8 @@ def get_palette_hash(img):
 def make_descriptor(filename):
     """Build a clean descriptor from an input filename."""
     stem = os.path.splitext(os.path.basename(filename))[0]
+    # Strip leading ISO-like timestamp prefixes (e.g. 2026-03-19T18-38-50)
+    stem = re.sub(r'^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}[_-]?', '', stem)
     # Replace underscores and spaces with hyphens
     desc = stem.replace('_', '-').replace(' ', '-')
     # Remove parentheses
@@ -120,10 +122,12 @@ def build_output_name(char_name, pal_hash, descriptor):
 
 # ── Character detection ───────────────────────────────────────────────────────
 
-def detect_character(img_w, img_h, dim_lookup, bases):
+def detect_character(img_w, img_h, dim_lookup, bases, img=None):
     """Detect character from image dimensions.
 
     Returns (char_id, scale_factor) or (None, None) with suggestions printed.
+    Falls back to content bounding-box matching for images with padding
+    (e.g. PalMod exports with black backgrounds and embedded swatches).
     """
     # Exact match
     if (img_w, img_h) in dim_lookup:
@@ -135,6 +139,31 @@ def detect_character(img_w, img_h, dim_lookup, bases):
             base_w, base_h = img_w // scale, img_h // scale
             if (base_w, base_h) in dim_lookup:
                 return dim_lookup[(base_w, base_h)], scale
+
+    # Content bounding-box fallback: strip padding, match inner dimensions
+    if img is not None:
+        arr = np.array(img)
+        mask = arr > 0
+        rows_any = np.any(mask, axis=1)
+        cols_any = np.any(mask, axis=0)
+        if np.any(rows_any) and np.any(cols_any):
+            rmin, rmax = np.where(rows_any)[0][[0, -1]]
+            cmin, cmax = np.where(cols_any)[0][[0, -1]]
+            content_w = cmax - cmin + 1
+            content_h = rmax - rmin + 1
+
+            best_cid, best_scale, best_diff = None, None, 999
+            for scale in [1, 2, 3, 4]:
+                for cid, b in bases.items():
+                    bw, bh = b['width'] * scale, b['height'] * scale
+                    diff = abs(content_w - bw) + abs(content_h - bh)
+                    if diff < best_diff:
+                        best_diff = diff
+                        best_cid = cid
+                        best_scale = scale
+
+            if best_diff <= 40 and best_cid is not None:
+                return best_cid, best_scale
 
     # No match — find closest by aspect ratio
     ar = img_w / img_h
@@ -430,7 +459,7 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
         scale = 1  # doesn't matter, we use the palette not pixels
         print(f"  Forced character: {CHARACTERS[cid]}")
     else:
-        cid, scale = detect_character(img_w, img_h, dim_lookup, bases)
+        cid, scale = detect_character(img_w, img_h, dim_lookup, bases, img=img)
         if cid is None:
             img.close()
             return 0
