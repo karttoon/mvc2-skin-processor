@@ -152,20 +152,48 @@ def detect_character(img_w, img_h, dim_lookup, bases, img=None):
             content_w = cmax - cmin + 1
             content_h = rmax - rmin + 1
 
-            best_cid, best_scale, best_diff = None, None, 999
+            candidates = []
             for scale in [1, 2, 3, 4]:
                 for cid, b in bases.items():
                     bw, bh = b['width'] * scale, b['height'] * scale
                     diff = abs(content_w - bw) + abs(content_h - bh)
                     # Penalize higher scales to prefer 2x over 3x/4x
                     weighted = diff + max(0, scale - 2) * 20
-                    if weighted < best_diff:
-                        best_diff = weighted
+                    if weighted <= 50:
+                        candidates.append((weighted, cid, scale))
+
+            if candidates:
+                candidates.sort()
+                best_weighted = candidates[0][0]
+                # If best match is exact or clearly dominant, use it directly
+                close = [c for c in candidates if c[0] <= best_weighted + 20]
+                if len(close) == 1 or best_weighted == 0:
+                    return candidates[0][1], candidates[0][2]
+
+                # Multiple close candidates — use pixel structure (IoU) to disambiguate
+                content = arr[rmin:rmax+1, cmin:cmax+1]
+                best_iou, best_cid, best_scale = -1, None, None
+                for _, cid, scale in close:
+                    b = bases[cid]
+                    bw, bh = b['width'], b['height']
+                    bp = b['pixels']
+                    if len(bp.shape) == 1:
+                        bp = bp.reshape(bh, bw)
+                    # Downscale content to base dimensions
+                    content_img = Image.fromarray(content)
+                    down = np.array(content_img.resize((bw, bh), Image.NEAREST))
+                    # IoU of non-zero pixel masks
+                    cm = down > 0
+                    bm = bp > 0
+                    inter = np.sum(cm & bm)
+                    union = np.sum(cm | bm)
+                    iou = inter / union if union > 0 else 0
+                    if iou > best_iou:
+                        best_iou = iou
                         best_cid = cid
                         best_scale = scale
-
-            if best_diff <= 40 and best_cid is not None:
-                return best_cid, best_scale
+                if best_cid is not None:
+                    return best_cid, best_scale
 
     # No match — find closest by aspect ratio
     ar = img_w / img_h
