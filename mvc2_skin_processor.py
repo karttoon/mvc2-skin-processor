@@ -157,8 +157,10 @@ def detect_character(img_w, img_h, dim_lookup, bases, img=None):
                 for cid, b in bases.items():
                     bw, bh = b['width'] * scale, b['height'] * scale
                     diff = abs(content_w - bw) + abs(content_h - bh)
-                    if diff < best_diff:
-                        best_diff = diff
+                    # Penalize higher scales to prefer 2x over 3x/4x
+                    weighted = diff + max(0, scale - 2) * 20
+                    if weighted < best_diff:
+                        best_diff = weighted
                         best_cid = cid
                         best_scale = scale
 
@@ -495,6 +497,13 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
         r, g, b = pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]
         a = 0 if i == 0 else 255
         body_pal.append((r, g, b, a))
+
+    if num_rows > 1 and max_idx < 16:
+        # Multi-row character but input only has single-row indices — palette
+        # was flattened/quantized so row mapping is lost. Skip to avoid garbled output.
+        print(f"  WARNING: {os.path.basename(png_path)} has flattened palette "
+              f"(max index {max_idx}, needs {num_rows} rows) — skipping")
+        return 0
 
     if max_idx >= 16 and num_rows > 1:
         # Image has multi-row data — extract all provided rows
