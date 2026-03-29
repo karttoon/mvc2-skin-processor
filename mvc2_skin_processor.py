@@ -3,7 +3,8 @@
 MvC2 Skin Processor — Unified tool for converting skins to standardized sprite sheets.
 
 Accepts Dreamcast CDI disc images, PS3 PKG packages, NAOMI arcade ROMs (.bin),
-individual PNG skin images, or folders containing any mix of the above.
+Steam ARC files (.arc), individual PNG skin images, or folders containing any
+mix of the above.
 
 Usage:
     python mvc2_skin_processor.py                      # process ./queue -> ./output
@@ -35,6 +36,7 @@ from mvc2_extract.palettes import extract_palette_files, parse_palettes
 from mvc2_extract.renderer import render_sprite, render_composite
 from mvc2_extract.cdi import parse_cdi
 from mvc2_extract.naomi import validate_naomi_rom, parse_naomi_palettes
+from mvc2_extract.arc import read_arc, validate_arc_rom, parse_arc_palettes
 
 SPRITE_BASES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sprite_bases")
 
@@ -466,6 +468,49 @@ def process_naomi(bin_path, bases, out_dir):
     return rendered
 
 
+def process_arc(arc_path, bases, out_dir):
+    """Process a Steam ARC file (game_50.arc)."""
+    descriptor = make_descriptor(os.path.basename(arc_path))
+    print(f"  Decompressing ARC...")
+
+    rom = read_arc(arc_path)
+    valid, msg = validate_arc_rom(rom)
+    if not valid:
+        print(f"  ERROR: {msg}")
+        return 0
+
+    print(f"  {msg} ({len(rom):,} bytes)")
+    print(f"  Extracting palettes for {len(PLAYABLE_CHARS)} characters...")
+
+    rendered = 0
+    chars_done = 0
+    for cid in PLAYABLE_CHARS:
+        if cid not in bases:
+            continue
+
+        palettes = parse_arc_palettes(rom, cid)
+        if not palettes:
+            continue
+
+        base = bases[cid]
+        cname = safe_name(CHARACTERS[cid])
+        char_dir = os.path.join(out_dir, cname)
+        os.makedirs(char_dir, exist_ok=True)
+
+        button_imgs = render_character(cid, palettes, base)
+        for btn, img in button_imgs:
+            pal_hash = get_palette_hash(img)
+            btn_desc = f"{descriptor}-{btn}" if descriptor else btn
+            fname = build_output_name(cname, pal_hash, btn_desc)
+            img.save(os.path.join(char_dir, fname))
+            rendered += 1
+
+        chars_done += 1
+
+    print(f"  Rendered {rendered} skins across {chars_done} characters")
+    return rendered
+
+
 def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     """Process an individual PNG skin image."""
     descriptor = make_descriptor(os.path.basename(png_path))
@@ -632,6 +677,8 @@ def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
             else:
                 print(f"  Not a NAOMI ROM (magic={magic!r}), skipping")
                 return 0, []
+        elif ext == '.arc':
+            count = process_arc(input_path, bases, out_dir)
         elif ext == '.png':
             count = process_image(input_path, bases, dim_lookup, out_dir, force_character)
         else:
@@ -648,7 +695,7 @@ def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
             item_path = os.path.join(input_path, item)
             if os.path.isfile(item_path):
                 ext = os.path.splitext(item)[1].lower()
-                if ext in ('.cdi', '.pkg', '.bin', '.png'):
+                if ext in ('.cdi', '.pkg', '.bin', '.arc', '.png'):
                     count, files = process_input(item_path, bases, dim_lookup, out_dir, force_character)
                     total += count
                     succeeded.extend(files)
@@ -718,19 +765,20 @@ def main():
     default_output = os.path.join(script_dir, "output")
 
     parser = argparse.ArgumentParser(
-        description="MvC2 Skin Processor — Convert CDI, PKG, or PNG skins to standardized sprites",
+        description="MvC2 Skin Processor — Convert CDI, PKG, ARC, or PNG skins to standardized sprites",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
   %(prog)s                            Process ./queue -> ./output
   %(prog)s mix.cdi                    Process a Dreamcast disc image
   %(prog)s arcade.bin                 Process a NAOMI arcade ROM
+  %(prog)s game_50.arc                Process a Steam ARC file
   %(prog)s skin.png -c Venom          Process with forced character
   %(prog)s ./my_skins/ -o ./my_out    Custom input and output directories
   %(prog)s --clean                    Process and remove successful inputs
 """)
     parser.add_argument("input", nargs="?", default=default_input,
-                        help="CDI file, PKG file, NAOMI ROM (.bin), PNG image, or folder (default: ./queue)")
+                        help="CDI file, PKG file, NAOMI ROM (.bin), Steam ARC (.arc), PNG image, or folder (default: ./queue)")
     parser.add_argument("-o", "--output", default=default_output,
                         help="Output directory (default: ./output)")
     parser.add_argument("-c", "--character",
@@ -780,7 +828,7 @@ Examples:
                 for root, _dirs, files in os.walk(in_path):
                     for f in files:
                         ext = os.path.splitext(f)[1].lower()
-                        if ext in ('.cdi', '.pkg', '.bin', '.png'):
+                        if ext in ('.cdi', '.pkg', '.bin', '.arc', '.png'):
                             remaining.append(os.path.join(root, f))
             if remaining:
                 print(f"\n  {len(remaining)} input(s) remaining (failed/unsupported):")

@@ -1,12 +1,12 @@
 # MvC2 Skin Processor
 
-A self-contained tool for extracting and standardizing Marvel vs. Capcom 2 character skin sprite sheets from Dreamcast disc images (CDI), NAOMI arcade ROMs (.bin), PS3 packages (PKG), or individual PalMod PNG palette swaps.
+A self-contained tool for extracting and standardizing Marvel vs. Capcom 2 character skin sprite sheets from Dreamcast disc images (CDI), NAOMI arcade ROMs (.bin), Steam ARC files (.arc), PS3 packages (PKG), or individual PalMod PNG palette swaps.
 
-Point it at a CDI, BIN, PKG, PNG, or a folder of mixed inputs and it outputs standardized indexed-color sprite sheets organized by character.
+Point it at a CDI, BIN, ARC, PKG, PNG, or a folder of mixed inputs and it outputs standardized indexed-color sprite sheets organized by character.
 
 ## Features
 
-- **Multi-format input** — Dreamcast CDI disc images, NAOMI arcade ROMs (.bin), PS3 PKG packages, individual PNG skins, or folders containing any mix
+- **Multi-format input** — Dreamcast CDI disc images, NAOMI arcade ROMs (.bin), Steam ARC files (.arc), PS3 PKG packages, individual PNG skins, or folders containing any mix
 - **Auto-detection** — Identifies characters from sprite dimensions (exact match or integer scale factors 2x/3x/4x/6x/8x)
 - **Composite rendering** — Correctly handles multi-row palette characters (Sentinel, Strider, Cable, etc.) with proper PalMod slot mapping
 - **Self-contained** — All 56 character base sprites bundled as compressed .npz files (~1.4 MB). No external dependencies like PalMod's img2020.dat
@@ -29,7 +29,7 @@ pip install -r requirements.txt
 
 ## Usage
 
-Drop CDI, BIN, PKG, or PNG files into `queue/` and run:
+Drop CDI, BIN, ARC, PKG, or PNG files into `queue/` and run:
 
 ```bash
 # Process everything in queue/ -> output/
@@ -40,6 +40,7 @@ python mvc2_skin_processor.py --clean
 
 # Process a specific file or folder
 python mvc2_skin_processor.py game.cdi
+python mvc2_skin_processor.py game_50.arc
 python mvc2_skin_processor.py ./my_skins_folder/
 
 # Force character when auto-detection can't match (non-standard dimensions)
@@ -100,9 +101,11 @@ All PNGs are **indexed-color** (mode P) with the palette embedded. Index 0 is al
 
 2. **BIN (NAOMI)** — Reads palette data directly from NAOMI arcade ROM files at fixed offsets (derived from PalMod's open-source offset tables). Same ARGB4444 palette format as Dreamcast. Renders all 56 characters x 6 button colors.
 
-3. **PKG** — Extracts PS3 package contents to a temp directory, locates palette files, and processes identically to CDI.
+3. **ARC (Steam)** — Decompresses the zlib-compressed ROM from Steam's `game_50.arc` container, then reads palettes at Steam-specific offsets (from PalMod's baseSteamShiftTable). Same ARGB4444 format, different addresses from NAOMI. Renders all 56 characters x 6 button colors.
 
-4. **PNG** — Reads the indexed-color palette from the input image, auto-detects the character by matching dimensions against the 56 bundled base sprites (supports exact match and integer downscale factors). Applies the input palette to the canonical base sprite for standardized output.
+4. **PKG** — Extracts PS3 package contents to a temp directory, locates palette files, and processes identically to CDI.
+
+5. **PNG** — Reads the indexed-color palette from the input image, auto-detects the character by matching dimensions against the 56 bundled base sprites (supports exact match and integer downscale factors). Applies the input palette to the canonical base sprite for standardized output.
 
 ### Palette Format (ARGB4444)
 
@@ -154,7 +157,7 @@ Total size: ~1.4 MB for all 56 characters.
 ## Project Structure
 
 ```
-mvc2_skin_processor.py    # Main extraction tool (CDI/BIN/PKG/PNG → standardized sprites)
+mvc2_skin_processor.py    # Main extraction tool (CDI/BIN/ARC/PKG/PNG → standardized sprites)
 ps3_pkg_extract.py        # PS3 PKG decryption/extraction
 gallery.py                # Browser-based skin triage gallery
 apply_verdicts.py         # Apply gallery verdicts (remove skipped skins)
@@ -162,7 +165,7 @@ merge_palettes.py         # Merge curated skins into personal collection
 default_hashes.json       # SHA256 hashes of all 336 default game palettes
 queue/                    # Drop CDI/PKG/PNG files here for processing
 output/                   # Processed output (auto-created)
-mvc2_extract/             # Core library (CDI parsing, NAOMI offsets, palettes, sprites, renderer)
+mvc2_extract/             # Core library (CDI parsing, NAOMI offsets, ARC/Steam parsing, palettes, sprites, renderer)
 sprite_bases/             # 56 character base sprites (.npz, ~1.4 MB total)
 composite_bases/          # 17 multi-row character composites (.npz)
 tools/                    # Build/maintenance tools (not part of user workflow)
