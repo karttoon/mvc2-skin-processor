@@ -200,20 +200,25 @@ def build_output_name(char_name, pal_hash, descriptor):
 def detect_character(img_w, img_h, dim_lookup, bases, img=None):
     """Detect character from image dimensions.
 
-    Returns (char_id, scale_factor) or (None, None) with suggestions printed.
+    Returns (char_id, scale_factor, confident) or (None, None, False) with
+    suggestions printed. `confident` is True only for an exact or clean
+    integer-scale dimension match (or a near-exact/strong content match);
+    fuzzy dimension guesses and weak silhouette matches return False so the
+    caller can decline to silently misfile them.
+
     Falls back to content bounding-box matching for images with padding
     (e.g. PalMod exports with black backgrounds and embedded swatches).
     """
     # Exact match
     if (img_w, img_h) in dim_lookup:
-        return dim_lookup[(img_w, img_h)], 1
+        return dim_lookup[(img_w, img_h)], 1, True
 
     # Integer downscale match
     for scale in [2, 3, 4, 6, 8]:
         if img_w % scale == 0 and img_h % scale == 0:
             base_w, base_h = img_w // scale, img_h // scale
             if (base_w, base_h) in dim_lookup:
-                return dim_lookup[(base_w, base_h)], scale
+                return dim_lookup[(base_w, base_h)], scale, True
 
     # Content bounding-box fallback: strip padding, match inner dimensions
     if img is not None:
@@ -240,10 +245,13 @@ def detect_character(img_w, img_h, dim_lookup, bases, img=None):
             if candidates:
                 candidates.sort()
                 best_weighted = candidates[0][0]
-                # If best match is exact or clearly dominant, use it directly
+                # If best match is exact or clearly dominant, use it directly.
+                # Only treat it as confident when the content dimensions match
+                # very closely — a loose dimension guess (e.g. a Cable sheet that
+                # happens to be ~2x Silver Samurai) must not be silently trusted.
                 close = [c for c in candidates if c[0] <= best_weighted + 20]
                 if len(close) == 1 or best_weighted == 0:
-                    return candidates[0][1], candidates[0][2]
+                    return candidates[0][1], candidates[0][2], (best_weighted <= 6)
 
                 # Multiple close candidates — use pixel structure (IoU) to disambiguate
                 content = arr[rmin:rmax+1, cmin:cmax+1]
@@ -268,7 +276,8 @@ def detect_character(img_w, img_h, dim_lookup, bases, img=None):
                         best_cid = cid
                         best_scale = scale
                 if best_cid is not None:
-                    return best_cid, best_scale
+                    # Confident only if the silhouette genuinely matches.
+                    return best_cid, best_scale, (best_iou >= 0.5)
 
     # No match — find closest by aspect ratio
     ar = img_w / img_h
@@ -290,7 +299,7 @@ def detect_character(img_w, img_h, dim_lookup, bases, img=None):
         print(f"  Could not auto-detect character for {img_w}x{img_h}. No aspect ratio matches.")
         print(f"  Use --character to specify manually.")
 
-    return None, None
+    return None, None, False
 
 
 def _normalize(name):
@@ -607,8 +616,15 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
         scale = 1  # doesn't matter, we use the palette not pixels
         print(f"  Forced character: {CHARACTERS[cid]}")
     else:
-        cid, scale = detect_character(img_w, img_h, dim_lookup, bases, img=img)
+        cid, scale, confident = detect_character(img_w, img_h, dim_lookup, bases, img=img)
         if cid is None:
+            img.close()
+            return 0
+        if not confident:
+            print(f"  LOW-CONFIDENCE auto-detect for {img_w}x{img_h}: best guess "
+                  f"{CHARACTERS[cid]}.")
+            print(f"  Skipping to avoid misfiling. Re-run this file with "
+                  f"--character <name> if the guess is correct or to set the right one.")
             img.close()
             return 0
         if scale > 1:
