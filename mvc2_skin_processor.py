@@ -73,6 +73,79 @@ def build_dimension_lookup(bases):
     return dim_to_cid
 
 
+def derive_canonical_palette_rows(base_px, own_px, own_pal, num_rows, default_pal):
+    """Reconstruct the game-order palette from a skin's actual rendered pixels.
+
+    A skin may store its palette in a different index order than the game sprite
+    expects — it renders fine as a standalone image, but when only the palette is
+    written into the game's sprite slots each pixel pulls the wrong color (looks
+    fine as a file, "confetti" in-game). We recover the correct order by sampling,
+    for each base-sprite index k, the color the input actually renders at the
+    pixels that are index k in the base sprite; the majority color becomes slot k.
+
+    For a skin already in canonical order (own pixels == base pixels) this returns
+    the input palette unchanged, so it is safe/idempotent to run on every skin.
+
+    Args:
+        base_px:  2D uint8 array (H, W) of base-sprite palette indices.
+        own_px:   2D uint8 array (H, W), same shape, the input's own indices.
+        own_pal:  list of (R, G, B) tuples — the input's palette.
+        num_rows: palette rows for the character (1 = body only).
+        default_pal: fallback (R, G, B) array for indices the input doesn't cover.
+
+    Returns:
+        list of num_rows rows, each 16 (R, G, B, A) tuples (index 0 alpha 0).
+    """
+    from collections import Counter
+    own_max = int(own_px.max()) if own_px.size else 0
+    npal = len(own_pal)
+    rows = []
+    for row in range(num_rows):
+        row_pal = []
+        for ci in range(16):
+            k = row * 16 + ci
+            a = 0 if ci == 0 else 255
+            mask = base_px == k
+            if mask.any() and k <= own_max:
+                cnt = Counter(
+                    own_pal[v] if v < npal else (0, 0, 0)
+                    for v in own_px[mask].ravel().tolist()
+                )
+                r, g, b = cnt.most_common(1)[0][0]
+            elif k < len(default_pal):
+                r, g, b = int(default_pal[k][0]), int(default_pal[k][1]), int(default_pal[k][2])
+            else:
+                r, g, b = 0, 0, 0
+            row_pal.append((r, g, b, a))
+        rows.append(row_pal)
+    return rows
+
+
+def _legacy_palette_rows(own_pal, num_rows, max_idx, default_pal):
+    """Fallback used when the input can't be aligned to the base sprite for color
+    sampling (odd/padded dimensions): copy the palette by raw index, filling any
+    rows the input lacks from the character defaults. This is the pre-derivation
+    behaviour and can propagate a scrambled index order, but only triggers for
+    inputs we can't safely sample."""
+    rows = []
+    npal = len(own_pal)
+    provided_rows = (max_idx // 16) + 1
+    for row in range(num_rows):
+        row_pal = []
+        for ci in range(16):
+            k = row * 16 + ci
+            a = 0 if ci == 0 else 255
+            if row < provided_rows and k < npal:
+                r, g, b = own_pal[k]
+            elif k < len(default_pal):
+                r, g, b = int(default_pal[k][0]), int(default_pal[k][1]), int(default_pal[k][2])
+            else:
+                r, g, b = 0, 0, 0
+            row_pal.append((r, g, b, a))
+        rows.append(row_pal)
+    return rows
+
+
 # ── Naming helpers ────────────────────────────────────────────────────────────
 
 def get_palette_hash(img):
@@ -552,91 +625,45 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     num_rows = base['num_rows']
     cname = safe_name(CHARACTERS[cid])
 
-    # Extract palette from the input PNG
+    # Extract palette + rendered pixel data from the input PNG
     pal = img.getpalette()
     if not pal:
         print(f"  ERROR: No palette in {png_path}")
         img.close()
         return 0
 
-    pixels = img.tobytes()
-    max_idx = max(pixels) if pixels else 0
+    own_px = np.array(img)
+    max_idx = int(own_px.max()) if own_px.size else 0
     img.close()
+    own_pal = [(pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]) for i in range(len(pal) // 3)]
 
-    # Build palette rows from the input image
-    # Row 0 (body) always comes from the input
-    body_pal = []
-    for i in range(16):
-        r, g, b = pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]
-        a = 0 if i == 0 else 255
-        body_pal.append((r, g, b, a))
+    bw, bh = base['width'], base['height']
+    bpx = base['pixels']
+    if bpx.ndim == 1:
+        bpx = bpx.reshape(bh, bw)
+    default_pal = base['default_palette']
 
-    if num_rows > 1 and max_idx < 16:
-        # Multi-row character but input only has single-row indices — palette
-        # was flattened/quantized so row mapping is lost. Skip to avoid garbled output.
-        print(f"  WARNING: {os.path.basename(png_path)} has flattened palette "
-              f"(max index {max_idx}, needs {num_rows} rows) — skipping")
-        return 0
-
-    if max_idx >= 16 and num_rows > 1:
-        # Image has multi-row data — extract all provided rows
-        input_rows = (max_idx // 16) + 1
-        all_rows = []
-        for row in range(min(input_rows, num_rows)):
-            row_pal = []
-            for ci in range(16):
-                idx = row * 16 + ci
-                r, g, b = pal[idx * 3], pal[idx * 3 + 1], pal[idx * 3 + 2]
-                a = 0 if ci == 0 and row == 0 else 255
-                row_pal.append((r, g, b, a))
-            all_rows.append(row_pal)
-
-        # Fill any missing rows from default
-        default_pal = base['default_palette']
-        while len(all_rows) < num_rows:
-            row_i = len(all_rows)
-            row_pal = []
-            for ci in range(16):
-                idx = row_i * 16 + ci
-                if idx < len(default_pal):
-                    r, g, b = int(default_pal[idx][0]), int(default_pal[idx][1]), int(default_pal[idx][2])
-                    a = 0 if ci == 0 and row_i == 0 else 255
-                    row_pal.append((r, g, b, a))
-                else:
-                    row_pal.append((0, 0, 0, 0))
-            all_rows.append(row_pal)
-
-        # Render composite
-        result_img = render_composite(
-            base['pixels'], base['width'], base['height'],
-            all_rows, num_rows, default_pal
-        )
-    elif num_rows > 1:
-        # Single-row input for a multi-row character — use body + defaults
-        default_pal = base['default_palette']
-        all_rows = [body_pal]
-        for row_i in range(1, num_rows):
-            row_pal = []
-            for ci in range(16):
-                idx = row_i * 16 + ci
-                if idx < len(default_pal):
-                    r, g, b = int(default_pal[idx][0]), int(default_pal[idx][1]), int(default_pal[idx][2])
-                    a = 255
-                    row_pal.append((r, g, b, a))
-                else:
-                    row_pal.append((0, 0, 0, 0))
-            all_rows.append(row_pal)
-
-        result_img = render_composite(
-            base['pixels'], base['width'], base['height'],
-            all_rows, num_rows, default_pal
-        )
+    # Reconstruct the palette in the game's index order by sampling the input's
+    # actual rendered colors at each base-sprite index (see
+    # derive_canonical_palette_rows). This fixes skins saved with a re-sorted
+    # palette — they render fine standalone but scramble in-game — and is a no-op
+    # for skins already in canonical order. Requires the input to be the same
+    # sprite art as the base, which holds at exact size or a clean integer scale;
+    # otherwise fall back to the legacy raw-index copy.
+    aligned = (own_px.shape[0] % bh == 0 and own_px.shape[1] % bw == 0
+               and own_px.shape[0] // bh == own_px.shape[1] // bw
+               and own_px.shape[0] >= bh)
+    if aligned:
+        if own_px.shape != (bh, bw):
+            own_px = np.array(Image.fromarray(own_px).resize((bw, bh), Image.NEAREST))
+        rows = derive_canonical_palette_rows(bpx, own_px, own_pal, num_rows, default_pal)
     else:
-        # Single-row character, single-row image — simple render
-        result_img = render_sprite(
-            base['pixels'].tobytes(), base['width'], base['height'],
-            body_pal
-        )
+        rows = _legacy_palette_rows(own_pal, num_rows, max_idx, default_pal)
+
+    if num_rows > 1:
+        result_img = render_composite(bpx, bw, bh, rows, num_rows, default_pal)
+    else:
+        result_img = render_sprite(bpx.tobytes(), bw, bh, rows[0])
 
     # Save
     char_dir = os.path.join(out_dir, cname)
