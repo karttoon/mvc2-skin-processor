@@ -29,8 +29,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 
-from mvc2_extract.cdi import parse_cdi
-from mvc2_extract.palettes import extract_palette_files, parse_palettes
+from mvc2_extract.cdi import parse_cdi, get_track_start_lba
+from mvc2_extract.palettes import (
+    extract_palette_files, extract_palette_files_manual, parse_palettes,
+)
 from mvc2_extract.sprites import ImgDat
 from mvc2_extract.renderer import render_sprite, render_composite
 from mvc2_extract.characters import (
@@ -159,152 +161,14 @@ def try_extract_cdi_with_fallback(cdi_path):
 
     # Fallback: manual ISO directory parsing for malformed path tables
     try:
-        pal_data = extract_palettes_manual(iso_data, cdi_path)
+        pal_data = extract_palette_files_manual(
+            iso_data, lba_offset=get_track_start_lba(cdi_path), quiet=True)
         if pal_data:
             return pal_data, None
     except Exception as e:
         return None, f"Both pycdlib and manual extraction failed: {e}"
 
     return None, "No palette files found"
-
-
-def extract_palettes_manual(iso_data, cdi_path):
-    """Manual ISO9660 directory parsing — fallback for malformed ISOs."""
-    sector_size = 2048
-
-    # Determine LBA offset from CDI track info
-    lba_offset = get_track_start_lba(cdi_path)
-
-    pvd_off = 16 * sector_size
-    if pvd_off + sector_size > len(iso_data):
-        return None
-    pvd = iso_data[pvd_off:pvd_off + sector_size]
-    if pvd[0] != 1 or pvd[1:6] != b'CD001':
-        return None
-
-    root_rec = pvd[156:156 + 34]
-    root_lba = struct.unpack_from('<I', root_rec, 2)[0]
-    root_size = struct.unpack_from('<I', root_rec, 10)[0]
-
-    palettes = {}
-
-    def parse_dir(dir_lba, dir_size):
-        buf_sector = dir_lba - lba_offset
-        offset = buf_sector * sector_size
-        end = offset + dir_size
-        entries = []
-
-        while offset < end and offset < len(iso_data):
-            rec_len = iso_data[offset]
-            if rec_len == 0:
-                next_sector = ((offset // sector_size) + 1) * sector_size
-                if next_sector >= end:
-                    break
-                offset = next_sector
-                continue
-            if rec_len < 34 or offset + rec_len > len(iso_data):
-                offset += max(rec_len, 1)
-                continue
-
-            record = iso_data[offset:offset + rec_len]
-            ext_lba = struct.unpack_from('<I', record, 2)[0]
-            data_len = struct.unpack_from('<I', record, 10)[0]
-            flags = record[25]
-            fn_len = record[32]
-            if fn_len > 0 and 33 + fn_len <= len(record):
-                try:
-                    filename = record[33:33 + fn_len].decode('ascii')
-                except UnicodeDecodeError:
-                    filename = ""
-                if ';' in filename:
-                    filename = filename.split(';')[0]
-                is_dir = bool(flags & 0x02)
-                entries.append((filename, ext_lba, data_len, is_dir))
-            offset += rec_len
-        return entries
-
-    def walk_dirs(entries):
-        for filename, lba, size, is_dir in entries:
-            if is_dir and filename not in ('\x00', '\x01'):
-                sub = parse_dir(lba, size)
-                walk_dirs(sub)
-            elif not is_dir and filename.startswith("PL") and filename.endswith("_DAT.BIN"):
-                hex_id = filename[2:4]
-                try:
-                    char_id = int(hex_id, 16)
-                except ValueError:
-                    continue
-                buf_sector = lba - lba_offset
-                file_offset = buf_sector * sector_size
-                if 0 <= file_offset and file_offset + size <= len(iso_data):
-                    palettes[char_id] = iso_data[file_offset:file_offset + size]
-
-    root_entries = parse_dir(root_lba, root_size)
-    walk_dirs(root_entries)
-    return palettes if palettes else None
-
-
-def get_track_start_lba(cdi_path):
-    """Parse CDI to get the data track's start LBA for manual ISO extraction."""
-    CDI_V2, CDI_V3, CDI_V35 = 0x80000004, 0x80000005, 0x80000006
-    with open(cdi_path, "rb") as f:
-        f.seek(0, 2)
-        file_length = f.tell()
-        f.seek(file_length - 8)
-        version = struct.unpack("<I", f.read(4))[0]
-        header_offset = struct.unpack("<I", f.read(4))[0]
-
-        if version == CDI_V35:
-            f.seek(file_length - header_offset)
-        elif version in (CDI_V2, CDI_V3):
-            f.seek(header_offset)
-        else:
-            return 0
-
-        num_sessions = struct.unpack("<H", f.read(2))[0]
-        track_position = 0
-        start_lba = 0
-
-        for _ in range(num_sessions):
-            num_tracks = struct.unpack("<H", f.read(2))[0]
-            for _ in range(num_tracks):
-                pos = track_position
-                temp = struct.unpack("<I", f.read(4))[0]
-                if temp != 0:
-                    f.seek(8, 1)
-                f.read(10); f.read(10)
-                f.seek(4, 1)
-                fn_len = struct.unpack("B", f.read(1))[0]
-                f.seek(fn_len, 1)
-                f.seek(11, 1); f.seek(4, 1); f.seek(4, 1)
-                temp = struct.unpack("<I", f.read(4))[0]
-                if temp == 0x80000000:
-                    f.seek(8, 1)
-                f.seek(2, 1)
-                pregap = struct.unpack("<I", f.read(4))[0]
-                length = struct.unpack("<i", f.read(4))[0]
-                f.seek(6, 1)
-                mode = struct.unpack("<I", f.read(4))[0]
-                f.seek(12, 1)
-                slba = struct.unpack("<I", f.read(4))[0]
-                total_length = struct.unpack("<I", f.read(4))[0]
-                f.seek(16, 1)
-                ss_val = struct.unpack("<I", f.read(4))[0]
-                sector_size = {0: 2048, 1: 2336, 2: 2352}[ss_val]
-                f.seek(29, 1)
-                if version != CDI_V2:
-                    f.seek(5, 1)
-                    temp = struct.unpack("<I", f.read(4))[0]
-                    if temp == 0xffffffff:
-                        f.seek(78, 1)
-                track_position += total_length * sector_size
-                if mode > 0 and length > 1000:
-                    start_lba = slba
-            f.seek(4, 1); f.seek(8, 1)
-            if version != CDI_V2:
-                f.seek(1, 1)
-
-    return start_lba
 
 
 def render_mix(pal_data, imgdat, out_dir, suffix, composite_bases=None):

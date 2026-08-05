@@ -32,9 +32,11 @@ from mvc2_extract.characters import (
     CHARACTERS, BUTTON_NAMES, PLAYABLE_CHARS,
     safe_name, palette_rows, palette_slot_map,
 )
-from mvc2_extract.palettes import extract_palette_files, parse_palettes
+from mvc2_extract.palettes import (
+    extract_palette_files, extract_palette_files_manual, parse_palettes,
+)
 from mvc2_extract.renderer import render_sprite, render_composite
-from mvc2_extract.cdi import parse_cdi
+from mvc2_extract.cdi import parse_cdi, get_track_start_lba
 from mvc2_extract.naomi import validate_naomi_rom, parse_naomi_palettes
 from mvc2_extract.arc import read_arc, validate_arc_rom, parse_arc_palettes
 
@@ -416,7 +418,18 @@ def process_cdi(cdi_path, bases, out_dir):
     print(f"  Parsing CDI...")
 
     iso_data = parse_cdi(cdi_path, quiet=True)
-    pal_data = extract_palette_files(iso_data, quiet=True)
+    try:
+        pal_data = extract_palette_files(iso_data, quiet=True)
+    except Exception:
+        pal_data = None
+    if not pal_data:
+        # Malformed ISO (e.g. mismatched path tables) — walk directory records directly
+        print(f"  pycdlib failed, using manual ISO parse...")
+        pal_data = extract_palette_files_manual(
+            iso_data, lba_offset=get_track_start_lba(cdi_path), quiet=True)
+    if not pal_data:
+        print(f"  No palette files found")
+        return 0
     print(f"  Found {len(pal_data)} character palette files")
 
     rendered = 0

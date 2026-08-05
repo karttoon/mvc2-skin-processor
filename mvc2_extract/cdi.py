@@ -139,3 +139,69 @@ def parse_cdi(cdi_path, quiet=False):
 
         log(f"  ISO data: {len(iso_data) / 1024 / 1024:.0f} MB")
         return bytes(iso_data)
+
+
+def get_track_start_lba(cdi_path):
+    """Return the data track's start LBA, for manual ISO directory parsing.
+
+    ISO9660 directory records store absolute disc LBAs; data extracted from a
+    CDI track starts at that track's LBA, so manual parsers must subtract it.
+    Returns 0 if the CDI version is unrecognized.
+    """
+    with open(cdi_path, "rb") as f:
+        f.seek(0, 2)
+        file_length = f.tell()
+        f.seek(file_length - 8)
+        version = struct.unpack("<I", f.read(4))[0]
+        header_offset = struct.unpack("<I", f.read(4))[0]
+
+        if version == CDI_V35:
+            f.seek(file_length - header_offset)
+        elif version in (CDI_V2, CDI_V3):
+            f.seek(header_offset)
+        else:
+            return 0
+
+        num_sessions = struct.unpack("<H", f.read(2))[0]
+        track_position = 0
+        start_lba = 0
+
+        for _ in range(num_sessions):
+            num_tracks = struct.unpack("<H", f.read(2))[0]
+            for _ in range(num_tracks):
+                temp = struct.unpack("<I", f.read(4))[0]
+                if temp != 0:
+                    f.seek(8, 1)
+                f.read(10); f.read(10)
+                f.seek(4, 1)
+                fn_len = struct.unpack("B", f.read(1))[0]
+                f.seek(fn_len, 1)
+                f.seek(11, 1); f.seek(4, 1); f.seek(4, 1)
+                temp = struct.unpack("<I", f.read(4))[0]
+                if temp == 0x80000000:
+                    f.seek(8, 1)
+                f.seek(2, 1)
+                pregap = struct.unpack("<I", f.read(4))[0]
+                length = struct.unpack("<i", f.read(4))[0]
+                f.seek(6, 1)
+                mode = struct.unpack("<I", f.read(4))[0]
+                f.seek(12, 1)
+                slba = struct.unpack("<I", f.read(4))[0]
+                total_length = struct.unpack("<I", f.read(4))[0]
+                f.seek(16, 1)
+                ss_val = struct.unpack("<I", f.read(4))[0]
+                sector_size = {0: 2048, 1: 2336, 2: 2352}[ss_val]
+                f.seek(29, 1)
+                if version != CDI_V2:
+                    f.seek(5, 1)
+                    temp = struct.unpack("<I", f.read(4))[0]
+                    if temp == 0xffffffff:
+                        f.seek(78, 1)
+                track_position += total_length * sector_size
+                if mode > 0 and length > 1000:
+                    start_lba = slba
+            f.seek(4, 1); f.seek(8, 1)
+            if version != CDI_V2:
+                f.seek(1, 1)
+
+    return start_lba

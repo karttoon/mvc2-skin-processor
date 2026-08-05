@@ -56,6 +56,88 @@ def extract_palette_files(iso_data, quiet=False):
     return palettes
 
 
+def extract_palette_files_manual(iso_data, lba_offset=0, quiet=False):
+    """Extract PL??_DAT.BIN files by walking ISO9660 directory records directly.
+
+    Fallback for discs pycdlib rejects (e.g. mismatched little/big-endian path
+    tables in hand-patched mixes). Directory records store absolute disc LBAs,
+    so pass the data track's start LBA (see cdi.get_track_start_lba).
+
+    Returns:
+        dict: Mapping of character_id (int) -> raw palette file bytes,
+        or None if no palette files were found.
+    """
+    sector_size = 2048
+
+    def log(msg):
+        if not quiet:
+            print(msg)
+
+    pvd_off = 16 * sector_size
+    if pvd_off + sector_size > len(iso_data):
+        return None
+    pvd = iso_data[pvd_off:pvd_off + sector_size]
+    if pvd[0] != 1 or pvd[1:6] != b'CD001':
+        return None
+
+    root_rec = pvd[156:156 + 34]
+    root_lba = struct.unpack_from('<I', root_rec, 2)[0]
+    root_size = struct.unpack_from('<I', root_rec, 10)[0]
+
+    palettes = {}
+
+    def parse_dir(dir_lba, dir_size):
+        offset = (dir_lba - lba_offset) * sector_size
+        end = offset + dir_size
+        entries = []
+
+        while offset < end and offset < len(iso_data):
+            rec_len = iso_data[offset]
+            if rec_len == 0:
+                next_sector = ((offset // sector_size) + 1) * sector_size
+                if next_sector >= end:
+                    break
+                offset = next_sector
+                continue
+            if rec_len < 34 or offset + rec_len > len(iso_data):
+                offset += max(rec_len, 1)
+                continue
+
+            record = iso_data[offset:offset + rec_len]
+            ext_lba = struct.unpack_from('<I', record, 2)[0]
+            data_len = struct.unpack_from('<I', record, 10)[0]
+            flags = record[25]
+            fn_len = record[32]
+            if fn_len > 0 and 33 + fn_len <= len(record):
+                try:
+                    filename = record[33:33 + fn_len].decode('ascii')
+                except UnicodeDecodeError:
+                    filename = ""
+                if ';' in filename:
+                    filename = filename.split(';')[0]
+                is_dir = bool(flags & 0x02)
+                entries.append((filename, ext_lba, data_len, is_dir))
+            offset += rec_len
+        return entries
+
+    def walk_dirs(entries):
+        for filename, lba, size, is_dir in entries:
+            if is_dir and filename not in ('\x00', '\x01'):
+                walk_dirs(parse_dir(lba, size))
+            elif not is_dir and filename.startswith("PL") and filename.endswith("_DAT.BIN"):
+                try:
+                    char_id = int(filename[2:4], 16)
+                except ValueError:
+                    continue
+                file_offset = (lba - lba_offset) * sector_size
+                if 0 <= file_offset and file_offset + size <= len(iso_data):
+                    palettes[char_id] = iso_data[file_offset:file_offset + size]
+
+    walk_dirs(parse_dir(root_lba, root_size))
+    log(f"  Found {len(palettes)} palette files (manual ISO parse)")
+    return palettes if palettes else None
+
+
 def parse_palettes(data):
     """Parse ARGB4444 palettes from raw PL??_DAT.BIN bytes.
 
@@ -67,6 +149,11 @@ def parse_palettes(data):
     """
     pal_start = struct.unpack_from("<I", data, 0x08)[0]
     pal_end = struct.unpack_from("<I", data, 0x0C)[0]
+    # Some builds (e.g. MVC2 TE-based mixes) place the palette block at the
+    # tail of the file and leave a stale end offset below the start; the block
+    # runs to EOF in that layout.
+    if pal_end <= pal_start:
+        pal_end = len(data)
     raw = data[pal_start:pal_end]
 
     num_uint16 = len(raw) // 2
