@@ -152,10 +152,17 @@ def main():
                     if os.path.isdir(os.path.join(input_dir, d))]
     print(f"Source characters: {len(source_chars)}")
 
-    # Scan only the matching character folders in the collection for dedup
+    # Scan the matching character folders in the collection for dedup.
+    # Hashes are scoped PER CHARACTER: the same palette legitimately exists
+    # on several characters (e.g. one color scheme posted for a whole team),
+    # so a global set would wrongly skip those as duplicates.
     print("Scanning existing collection...")
-    existing_hashes = scan_collection(collection_dir, only_chars=source_chars)
-    print(f"  {len(existing_hashes)} existing palettes indexed (from {len(source_chars)} character folders)")
+    existing_by_char = {}
+    for char in source_chars:
+        existing_by_char[char] = scan_collection(collection_dir,
+                                                 only_chars=[char])
+    total_indexed = sum(len(s) for s in existing_by_char.values())
+    print(f"  {total_indexed} existing palettes indexed (from {len(source_chars)} character folders)")
     print()
 
     # Process input
@@ -174,6 +181,7 @@ def main():
         if not pngs:
             continue
 
+        existing_hashes = existing_by_char.setdefault(char_name, set())
         char_copied = 0
         for fname in pngs:
             fpath = os.path.join(char_path, fname)
