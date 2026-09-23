@@ -105,7 +105,7 @@ All PNGs are **indexed-color** (mode P) with the palette embedded. Index 0 is al
 
 4. **PKG** — Extracts PS3 package contents to a temp directory, locates palette files, and processes identically to CDI.
 
-5. **PNG** — Reads the indexed-color palette from the input image, auto-detects the character by matching dimensions against the 56 bundled base sprites (supports exact match and integer downscale factors). Applies the input palette to the canonical base sprite for standardized output.
+5. **PNG** — Reads the indexed-color palette from the input image, auto-detects the character by matching dimensions against the 56 bundled base sprites (supports exact match and integer downscale factors). Applies the input palette to the canonical base sprite for standardized output. True-color inputs (RGBA/RGB re-exports of sheet art) are also accepted: the palette is reconstructed by sampling the input's colors at each base-sprite index position, which requires the image to be the same sheet art at exact size or a clean integer scale.
 
 ### Palette Format (ARGB4444)
 

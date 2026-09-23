@@ -123,6 +123,46 @@ def derive_canonical_palette_rows(base_px, own_px, own_pal, num_rows, default_pa
     return rows
 
 
+def derive_palette_rows_from_rgba(base_px, rgba_px, num_rows, default_pal):
+    """Reconstruct game-order palette rows from a true-color (RGBA) rendering.
+
+    Same positional-majority sampling as derive_canonical_palette_rows, but the
+    input supplies colors directly instead of palette indices: for each base
+    index k, the most common opaque color at the pixels that are index k in the
+    base sprite becomes slot k. Requires the input to be the same sprite art as
+    the base (exact size or clean integer scale).
+
+    Args:
+        base_px:  2D uint8 array (H, W) of base-sprite palette indices.
+        rgba_px:  3D uint8 array (H, W, 4), the input's colors, same H/W.
+        num_rows: palette rows for the character (1 = body only).
+        default_pal: fallback (R, G, B) array for indices the input doesn't cover.
+
+    Returns:
+        list of num_rows rows, each 16 (R, G, B, A) tuples (index 0 alpha 0).
+    """
+    from collections import Counter
+    rgb = rgba_px[..., :3]
+    alpha = rgba_px[..., 3]
+    rows = []
+    for row in range(num_rows):
+        row_pal = []
+        for ci in range(16):
+            k = row * 16 + ci
+            a = 0 if ci == 0 else 255
+            mask = (base_px == k) & (alpha > 127)
+            if mask.any():
+                cnt = Counter(map(tuple, rgb[mask].reshape(-1, 3).tolist()))
+                r, g, b = cnt.most_common(1)[0][0]
+            elif k < len(default_pal):
+                r, g, b = int(default_pal[k][0]), int(default_pal[k][1]), int(default_pal[k][2])
+            else:
+                r, g, b = 0, 0, 0
+            row_pal.append((r, g, b, a))
+        rows.append(row_pal)
+    return rows
+
+
 def _legacy_palette_rows(own_pal, num_rows, max_idx, default_pal):
     """Fallback used when the input can't be aligned to the base sprite for color
     sampling (odd/padded dimensions): copy the palette by raw index, filling any
@@ -611,12 +651,22 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     descriptor = make_descriptor(os.path.basename(png_path))
 
     img = Image.open(png_path)
-    if img.mode != 'P':
-        print(f"  WARNING: {png_path} is not palette-indexed (mode={img.mode}), skipping")
-        img.close()
-        return 0
-
     img_w, img_h = img.size
+
+    # True-color uploads (e.g. Discord re-exports of sheet art) carry no palette
+    # to copy, but positional sampling against the base sprite recovers it —
+    # see derive_palette_rows_from_rgba. Indexed inputs keep the palette path.
+    rgba_px = None
+    if img.mode != 'P':
+        print(f"  Not palette-indexed (mode={img.mode}) — reconstructing palette "
+              f"by sampling colors against the base sprite")
+        rgba_px = np.array(img.convert('RGBA'))
+        img.close()
+        # 2D content mask standing in for an index array during detection:
+        # transparency where the image has any, else non-black.
+        alpha = rgba_px[..., 3]
+        mask2d = (alpha > 0) if (alpha == 0).any() else rgba_px[..., :3].any(axis=2)
+        img = Image.fromarray(mask2d.astype(np.uint8))
 
     # Detect or force character
     if force_character:
@@ -655,16 +705,20 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     cname = safe_name(CHARACTERS[cid])
 
     # Extract palette + rendered pixel data from the input PNG
-    pal = img.getpalette()
-    if not pal:
-        print(f"  ERROR: No palette in {png_path}")
-        img.close()
-        return 0
+    own_px = None
+    own_pal = None
+    max_idx = 0
+    if rgba_px is None:
+        pal = img.getpalette()
+        if not pal:
+            print(f"  ERROR: No palette in {png_path}")
+            img.close()
+            return 0
 
-    own_px = np.array(img)
-    max_idx = int(own_px.max()) if own_px.size else 0
-    img.close()
-    own_pal = [(pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]) for i in range(len(pal) // 3)]
+        own_px = np.array(img)
+        max_idx = int(own_px.max()) if own_px.size else 0
+        img.close()
+        own_pal = [(pal[i * 3], pal[i * 3 + 1], pal[i * 3 + 2]) for i in range(len(pal) // 3)]
 
     bw, bh = base['width'], base['height']
     bpx = base['pixels']
@@ -679,13 +733,25 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     # for skins already in canonical order. Requires the input to be the same
     # sprite art as the base, which holds at exact size or a clean integer scale;
     # otherwise fall back to the legacy raw-index copy.
-    aligned = (own_px.shape[0] % bh == 0 and own_px.shape[1] % bw == 0
-               and own_px.shape[0] // bh == own_px.shape[1] // bw
-               and own_px.shape[0] >= bh)
+    in_h, in_w = (rgba_px.shape[:2] if rgba_px is not None else own_px.shape)
+    aligned = (in_h % bh == 0 and in_w % bw == 0
+               and in_h // bh == in_w // bw
+               and in_h >= bh)
     if aligned:
-        if own_px.shape != (bh, bw):
-            own_px = np.array(Image.fromarray(own_px).resize((bw, bh), Image.NEAREST))
-        rows = derive_canonical_palette_rows(bpx, own_px, own_pal, num_rows, default_pal)
+        if rgba_px is not None:
+            if rgba_px.shape[:2] != (bh, bw):
+                rgba_px = np.array(Image.fromarray(rgba_px).resize((bw, bh), Image.NEAREST))
+            rows = derive_palette_rows_from_rgba(bpx, rgba_px, num_rows, default_pal)
+        else:
+            if own_px.shape != (bh, bw):
+                own_px = np.array(Image.fromarray(own_px).resize((bw, bh), Image.NEAREST))
+            rows = derive_canonical_palette_rows(bpx, own_px, own_pal, num_rows, default_pal)
+    elif rgba_px is not None:
+        # No palette to fall back on for true-color input — sampling is the
+        # only way to recover index order, and it needs aligned sprite art.
+        print(f"  ERROR: true-color input ({in_w}x{in_h}) doesn't align to the "
+              f"{CHARACTERS[cid]} base ({bw}x{bh}) — can't sample palette, skipping")
+        return 0
     else:
         rows = _legacy_palette_rows(own_pal, num_rows, max_idx, default_pal)
 
