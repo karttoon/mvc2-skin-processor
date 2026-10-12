@@ -22,6 +22,7 @@ import os
 import re
 import sys
 import tempfile
+import zipfile
 
 import numpy as np
 from PIL import Image
@@ -771,6 +772,48 @@ def process_image(png_path, bases, dim_lookup, out_dir, force_character=None):
     return 1
 
 
+def process_zip(zip_path, bases, dim_lookup, out_dir, force_character=None):
+    """Inspect a ZIP archive for a single processable file and run it."""
+    supported = ('.cdi', '.bin', '.arc', '.pkg')
+    try:
+        zf = zipfile.ZipFile(zip_path)
+    except (zipfile.BadZipFile, Exception) as e:
+        print(f"  ERROR: Cannot read ZIP — {e}")
+        return 0, []
+
+    found = []
+    for info in zf.infolist():
+        if info.is_dir():
+            continue
+        ext = os.path.splitext(info.filename)[1].lower()
+        if ext in supported:
+            found.append(info)
+    zf.close()
+
+    if not found:
+        print(f"  No processable files found inside ZIP")
+        print(f"  Supported types: {', '.join(supported)}")
+        return 0, []
+
+    if len(found) > 1:
+        print(f"  ZIP contains {len(found)} processable files — can only handle one at a time:")
+        for info in found:
+            print(f"    {info.filename}")
+        return 0, []
+
+    target = found[0]
+    print(f"  Extracting {target.filename} from ZIP...")
+    with tempfile.TemporaryDirectory() as tmp:
+        zf = zipfile.ZipFile(zip_path)
+        zf.extract(target, tmp)
+        zf.close()
+        extracted = os.path.join(tmp, target.filename)
+        count, _ = process_input(extracted, bases, dim_lookup, out_dir, force_character)
+
+    succeeded = [os.path.abspath(zip_path)] if count > 0 else []
+    return count, succeeded
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
@@ -803,6 +846,8 @@ def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
             count = process_arc(input_path, bases, out_dir)
         elif ext == '.png':
             count = process_image(input_path, bases, dim_lookup, out_dir, force_character)
+        elif ext == '.zip':
+            return process_zip(input_path, bases, dim_lookup, out_dir, force_character)
         else:
             print(f"  Unsupported file type: {ext}")
             return 0, []
@@ -817,7 +862,7 @@ def process_input(input_path, bases, dim_lookup, out_dir, force_character=None):
             item_path = os.path.join(input_path, item)
             if os.path.isfile(item_path):
                 ext = os.path.splitext(item)[1].lower()
-                if ext in ('.cdi', '.pkg', '.bin', '.arc', '.png'):
+                if ext in ('.cdi', '.pkg', '.bin', '.arc', '.png', '.zip'):
                     count, files = process_input(item_path, bases, dim_lookup, out_dir, force_character)
                     total += count
                     succeeded.extend(files)
@@ -950,7 +995,7 @@ Examples:
                 for root, _dirs, files in os.walk(in_path):
                     for f in files:
                         ext = os.path.splitext(f)[1].lower()
-                        if ext in ('.cdi', '.pkg', '.bin', '.arc', '.png'):
+                        if ext in ('.cdi', '.pkg', '.bin', '.arc', '.png', '.zip'):
                             remaining.append(os.path.join(root, f))
             if remaining:
                 print(f"\n  {len(remaining)} input(s) remaining (failed/unsupported):")
